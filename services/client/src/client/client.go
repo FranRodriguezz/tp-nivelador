@@ -1,7 +1,9 @@
 package client
 
 import (
+	"bufio"
 	"net"
+	"os"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -19,6 +21,8 @@ type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
+	InputFile  string
+	OutputFile string
 }
 
 type Client struct {
@@ -59,34 +63,48 @@ func connectToServer(host, port string) (net.Conn, error) {
 }
 
 func (client *Client) Run() error {
-	const mainAction = "test-echo-server"
 	defer client.conn.Close()
 
-	for messageId := range ECHO_CLIENT_MESSAGE_AMOUNT {
-		messageArgs := []any{"agency-id", client.config.AgencyId, "message-id", messageId}
-		logger.Info(mainAction, logger.InProgress, messageArgs...)
-
-		clientMessage := client.config.AgencyId
-
-		if err := safe_socket.SendAll(client.conn, []byte(clientMessage)); err != nil {
-			logger.Error("send-message", logger.Fail, messageArgs...)
-			return err
-		}
-
-		responseBuffer, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
-		if err != nil {
-			logger.Error("recv-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		if string(responseBuffer) != clientMessage {
-			logger.Error("check-response", logger.Fail, messageArgs...)
-			return err
-		}
-
-		time.Sleep(ECHO_CLIENT_MESSAGE_DELAY_MS * time.Millisecond)
+	inFile, err := os.Open(client.config.InputFile)
+	if err != nil {
+		logger.Error("open-input-file", logger.Fail)
+		return err
 	}
-	logger.Info(mainAction, logger.Success, "agency-id", client.config.AgencyId)
+	defer inFile.Close()
 
+	outFile, err := os.Create(client.config.OutputFile)
+	if err != nil {
+		logger.Error("create-output-file", logger.Fail)
+		return err
+	}
+	defer outFile.Close()
+
+	scanner := bufio.NewScanner(inFile)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if err := safe_socket.SendAll(client.conn, []byte(line+"\n")); err != nil {
+			logger.Error("send-bet", logger.Fail)
+			return err
+		}
+
+		response, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
+		if err != nil {
+			logger.Error("recv-response", logger.Fail)
+			return err
+		}
+
+		if _, err := outFile.Write(response); err != nil {
+			logger.Error("write-output-file", logger.Fail)
+			return err
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		logger.Error("read-input-file", logger.Fail)
+		return err
+	}
+
+	logger.Info("process-bets", logger.Success, "agency-id", client.config.AgencyId)
 	return nil
 }
