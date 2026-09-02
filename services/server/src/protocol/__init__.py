@@ -9,4 +9,6 @@ from .protocol import (
     decode_header,
     encode_winners,
     decode_winners,
+    send_message,
+    recv_message,
 )
