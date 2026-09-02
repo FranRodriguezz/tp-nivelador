@@ -1,8 +1,10 @@
 import socket
 import logger
 import safe_socket
+import protocol
+from lottery import Lottery
 
-_ECHO_SERVER_MESSAGE_SIZE = 1024
+STORAGE_PATH = "/tmp/bets_storage.csv"
 
 
 class Server:
@@ -15,20 +17,43 @@ class Server:
         message_amount = 0
         try:
             logger.info(action, logger.LogResult.in_progress)
+            lottery = Lottery(STORAGE_PATH)
+            agency_id = None
             while True:
-                client_message = safe_socket.recv_all(
-                    client_socket, _ECHO_SERVER_MESSAGE_SIZE
-                )
-                if not client_message:
-                    logger.info(
-                        action,
-                        logger.LogResult.success,
-                        "messages-amount",
-                        message_amount,
-                    )
-                    return
+                msg_type, payload = protocol.recv_message(client_socket)
                 message_amount += 1
-                safe_socket.send_all(client_socket, client_message)
+                if msg_type == protocol.BET:
+                    bet = protocol.decode_bet(payload)
+                    if agency_id is None:
+                        agency_id = bet.agency_id
+                    elif agency_id != bet.agency_id:
+                        logger.error(
+                            action,
+                            logger.LogResult.fail,
+                            "agency-id-mismatch",
+                            f"expected {agency_id}, got {bet.agency_id}",
+                        )
+                        raise ValueError(
+                            f"Agency ID mismatch: expected {agency_id}, got {bet.agency_id}"
+                        )
+                    lottery.store_bets([bet])
+                elif msg_type == protocol.DONE:
+                    break
+                else:
+                    logger.error(
+                        action,
+                        logger.LogResult.fail,
+                        "invalid-message-type",
+                        f"got {msg_type}",
+                    )
+                    raise ValueError(f"Invalid message type: {msg_type}")
+
+            all_bets = lottery.load_bets()
+            only_winners = [bet for bet in all_bets if (lottery.has_won(bet) and bet.agency_id == agency_id)]
+            coding_winners = protocol.encode_winners(only_winners)
+            protocol.send_message(client_socket, protocol.WINNERS, coding_winners)
+            logger.info(action, logger.LogResult.success, "messages-amount", message_amount)
+                
         except Exception as e:
             logger.error(
                 action, logger.LogResult.fail, "messages-amount", message_amount
