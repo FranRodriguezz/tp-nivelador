@@ -2,9 +2,10 @@ import struct
 from lottery import Bet
 from safe_socket import send_all, recv_all
 
-BET = 0
+BATCH = 0
 DONE = 1
 WINNERS = 2
+ACK = 3
 
 HEADER_SIZE = 3 # 1 byte tipo + 2 bytes longitud
 
@@ -62,3 +63,23 @@ def recv_message(sock):
     msg_type, length = decode_header(header_bytes)
     payload = recv_all(sock, length)
     return msg_type, payload
+
+def encode_batch(bets):
+    """Encodes a list of Bet objects into bytes containing their payloads
+    """
+    encoded_bets = []
+    for bet in bets:
+        encoded_bet = encode_bet(bet).decode("utf-8")
+        encoded_bets.append(encoded_bet)
+    return "\n".join(encoded_bets).encode("utf-8")
+
+def decode_batch(payload):
+    """Decodes bytes containing multiple bet payloads into a list of Bet objects
+    """
+    payload_str = payload.decode("utf-8")
+    bets = []
+    bet_strings = payload_str.split("\n")
+    for bet_string in bet_strings:
+        encoded_bet = bet_string.encode("utf-8")
+        bets.append(decode_bet(encoded_bet))
+    return bets

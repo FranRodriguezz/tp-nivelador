@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	BET     = 0
+	BATCH   = 0
 	DONE    = 1
 	WINNERS = 2
+	ACK     = 3
 )
 
 const HEADER_SIZE = 3
@@ -138,4 +139,32 @@ func RecvMessage(conn io.Reader) (int, []byte, error) {
 		return msgType, []byte{}, nil
 	}
 	return 0, nil, fmt.Errorf("invalid message length: %d", length)
+}
+
+// EncodeBatch encodes a slice of Bet structs into a single byte slice for transmission over a network.
+func EncodeBatch(bets []Bet) []byte {
+	betStrings := []string{}
+	for _, bet := range bets {
+		betStrings = append(betStrings, string(EncodeBet(bet)))
+	}
+	result := strings.Join(betStrings, "\n")
+	return []byte(result)
+}
+
+// DecodeBatch decodes a byte slice into a slice of Bet structs.
+func DecodeBatch(payload []byte) ([]Bet, error) {
+	payloadStr := string(payload)
+	betStrings := strings.Split(payloadStr, "\n")
+
+	bets := []Bet{}  
+
+	for _, betStr := range betStrings {
+		bet, err := DecodeBet([]byte(betStr))
+		if err != nil {
+			return nil, err
+		}
+		bets = append(bets, bet)
+	}
+
+	return bets, nil
 }

@@ -1,7 +1,8 @@
 from .protocol import (
-    BET,
+    BATCH,
     DONE,
     WINNERS,
+    ACK,
     HEADER_SIZE,
     encode_bet,
     decode_bet,
@@ -11,4 +12,6 @@ from .protocol import (
     decode_winners,
     send_message,
     recv_message,
+    encode_batch,
+    decode_batch
 )

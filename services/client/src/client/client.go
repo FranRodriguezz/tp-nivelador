@@ -16,13 +16,13 @@ import (
 const CONNECTION_ATTEMPTS_MAX = 15
 const CONNECTION_ATTEMPS_DELAY_MS = 500
 
-
 type ClientConfig struct {
 	ServerHost string
 	ServerPort string
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  int
 }
 
 type Client struct {
@@ -62,6 +62,25 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+// sendBatch encodes a batch of bets, sends it, and waits for the server's ACK.
+func sendBatch(conn net.Conn, batch []protocol.Bet) error {
+	batchPayload := protocol.EncodeBatch(batch)
+	if err := protocol.SendMessage(conn, protocol.BATCH, batchPayload); err != nil {
+		return err
+	}
+
+	_, ackPayload, err := protocol.RecvMessage(conn)
+	if err != nil {
+		return err
+	}
+
+	if len(ackPayload) != 0 {
+		return fmt.Errorf("unexpected payload in ACK: %s", string(ackPayload))
+	}
+
+	return nil
+}
+
 func (client *Client) Run() error {
 	defer client.conn.Close()
 
@@ -80,6 +99,8 @@ func (client *Client) Run() error {
 	defer outFile.Close()
 
 	scanner := bufio.NewScanner(inFile)
+	batch := []protocol.Bet{}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		parsedLine, err := parseBet(line, client.config.AgencyId)
@@ -88,18 +109,27 @@ func (client *Client) Run() error {
 			return err
 		}
 
-		codifiedBet := protocol.EncodeBet(parsedLine)
+		batch = append(batch, parsedLine)
 
-		err = protocol.SendMessage(client.conn, protocol.BET, codifiedBet)
-		if err != nil {
-			logger.Error("send-bet", logger.Fail, "line", line)
-			return err
+		if len(batch) == client.config.BatchSize {
+			if err := sendBatch(client.conn, batch); err != nil {
+				logger.Error("send-batch", logger.Fail)
+				return err
+			}
+			batch = []protocol.Bet{}
 		}
 	}
 
 	if err := scanner.Err(); err != nil {
 		logger.Error("read-input-file", logger.Fail)
 		return err
+	}
+
+	if len(batch) > 0 {
+		if err := sendBatch(client.conn, batch); err != nil {
+			logger.Error("send-batch", logger.Fail)
+			return err
+		}
 	}
 
 	if err := protocol.SendMessage(client.conn, protocol.DONE, nil); err != nil {

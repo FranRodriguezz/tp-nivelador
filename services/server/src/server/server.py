@@ -22,21 +22,22 @@ class Server:
             while True:
                 msg_type, payload = protocol.recv_message(client_socket)
                 message_amount += 1
-                if msg_type == protocol.BET:
-                    bet = protocol.decode_bet(payload)
+                if msg_type == protocol.BATCH:
+                    bets = protocol.decode_batch(payload)
                     if agency_id is None:
-                        agency_id = bet.agency_id
-                    elif agency_id != bet.agency_id:
+                        agency_id = bets[0].agency_id
+                    elif agency_id != bets[0].agency_id:
                         logger.error(
                             action,
                             logger.LogResult.fail,
                             "agency-id-mismatch",
-                            f"expected {agency_id}, got {bet.agency_id}",
+                            f"expected {agency_id}, got {bets[0].agency_id}",
                         )
                         raise ValueError(
-                            f"Agency ID mismatch: expected {agency_id}, got {bet.agency_id}"
+                            f"Agency ID mismatch: expected {agency_id}, got {bets[0].agency_id}"
                         )
-                    lottery.store_bets([bet])
+                    lottery.store_bets(bets)
+                    protocol.send_message(client_socket, protocol.ACK, b"")
                 elif msg_type == protocol.DONE:
                     break
                 else:
