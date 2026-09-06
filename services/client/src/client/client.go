@@ -2,20 +2,19 @@ package client
 
 import (
 	"bufio"
+	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
-	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/safe_socket"
+	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/protocol"
 )
 
 const CONNECTION_ATTEMPTS_MAX = 15
 const CONNECTION_ATTEMPS_DELAY_MS = 500
-
-const ECHO_CLIENT_BUFFER_SIZE = 512
-const ECHO_CLIENT_MESSAGE_AMOUNT = 3
-const ECHO_CLIENT_MESSAGE_DELAY_MS = 1000
 
 type ClientConfig struct {
 	ServerHost string
@@ -23,6 +22,7 @@ type ClientConfig struct {
 	AgencyId   string
 	InputFile  string
 	OutputFile string
+	BatchSize  int
 }
 
 type Client struct {
@@ -62,6 +62,25 @@ func connectToServer(host, port string) (net.Conn, error) {
 	return conn, err
 }
 
+// sendBatch encodes a batch of bets, sends it, and waits for the server's ACK.
+func sendBatch(conn net.Conn, batch []protocol.Bet) error {
+	batchPayload := protocol.EncodeBatch(batch)
+	if err := protocol.SendMessage(conn, protocol.BATCH, batchPayload); err != nil {
+		return err
+	}
+
+	_, ackPayload, err := protocol.RecvMessage(conn)
+	if err != nil {
+		return err
+	}
+
+	if len(ackPayload) != 0 {
+		return fmt.Errorf("unexpected payload in ACK: %s", string(ackPayload))
+	}
+
+	return nil
+}
+
 func (client *Client) Run() error {
 	defer client.conn.Close()
 
@@ -80,23 +99,24 @@ func (client *Client) Run() error {
 	defer outFile.Close()
 
 	scanner := bufio.NewScanner(inFile)
+	batch := []protocol.Bet{}
+
 	for scanner.Scan() {
 		line := scanner.Text()
-
-		if err := safe_socket.SendAll(client.conn, []byte(line+"\n")); err != nil {
-			logger.Error("send-bet", logger.Fail)
-			return err
-		}
-
-		response, err := safe_socket.RecvAll(client.conn, ECHO_CLIENT_BUFFER_SIZE)
+		parsedLine, err := parseBet(line, client.config.AgencyId)
 		if err != nil {
-			logger.Error("recv-response", logger.Fail)
+			logger.Error("parse-bet", logger.Fail, "line", line)
 			return err
 		}
 
-		if _, err := outFile.Write(response); err != nil {
-			logger.Error("write-output-file", logger.Fail)
-			return err
+		batch = append(batch, parsedLine)
+
+		if len(batch) == client.config.BatchSize {
+			if err := sendBatch(client.conn, batch); err != nil {
+				logger.Error("send-batch", logger.Fail)
+				return err
+			}
+			batch = []protocol.Bet{}
 		}
 	}
 
@@ -105,6 +125,65 @@ func (client *Client) Run() error {
 		return err
 	}
 
+	if len(batch) > 0 {
+		if err := sendBatch(client.conn, batch); err != nil {
+			logger.Error("send-batch", logger.Fail)
+			return err
+		}
+	}
+
+	if err := protocol.SendMessage(client.conn, protocol.DONE, nil); err != nil {
+		logger.Error("send-done", logger.Fail)
+		return err
+	}
+
+	_, payload, err := protocol.RecvMessage(client.conn)
+	if err != nil {
+		logger.Error("recv-winners", logger.Fail)
+		return err
+	}
+
+	winners, err := protocol.DecodeWinners(payload)
+	if err != nil {
+		logger.Error("decode-winners", logger.Fail)
+		return err
+	}
+
+	for _, winner := range winners {
+		if _, err := outFile.WriteString(fmt.Sprintf("%d\n", winner)); err != nil {
+			logger.Error("write-winner", logger.Fail, "winner", winner)
+			return err
+		}
+	}
 	logger.Info("process-bets", logger.Success, "agency-id", client.config.AgencyId)
 	return nil
+}
+
+// parseBet parses a line from the input file and returns a Bet struct.
+func parseBet(line string, agencyId string) (protocol.Bet, error) {
+	parts := strings.Split(line, ",")
+
+	agencyIdInt, err := strconv.Atoi(agencyId)
+	if err != nil {
+		return protocol.Bet{}, err
+	}
+
+	document, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return protocol.Bet{}, err
+	}
+
+	number, err := strconv.Atoi(parts[4])
+	if err != nil {
+		return protocol.Bet{}, err
+	}
+
+	return protocol.Bet{
+		AgencyId:  agencyIdInt,
+		FirstName: parts[0],
+		LastName:  parts[1],
+		Document:  document,
+		Birthdate: parts[3],
+		Number:    number,
+	}, nil
 }

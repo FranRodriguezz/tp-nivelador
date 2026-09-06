@@ -27,6 +27,7 @@ services:
       - SERVER_PORT=5678
       - INPUT_FILE=/input.csv
       - OUTPUT_FILE=/output/output-0.txt
+      - BATCH_SIZE=100
 
   client_1:
     build:
@@ -44,6 +45,7 @@ services:
       - SERVER_PORT=5678
       - INPUT_FILE=/input.csv
       - OUTPUT_FILE=/output/output-1.txt
+      - BATCH_SIZE=100
 
   client_2:
     build:
@@ -61,6 +63,7 @@ services:
       - SERVER_PORT=5678
       - INPUT_FILE=/input.csv
       - OUTPUT_FILE=/output/output-2.txt
+      - BATCH_SIZE=100
 
   client_3:
     build:
@@ -78,6 +81,7 @@ services:
       - SERVER_PORT=5678
       - INPUT_FILE=/input.csv
       - OUTPUT_FILE=/output/output-3.txt
+      - BATCH_SIZE=100
 
   client_4:
     build:
@@ -95,3 +99,4 @@ services:
       - SERVER_PORT=5678
       - INPUT_FILE=/input.csv
       - OUTPUT_FILE=/output/output-4.txt
+      - BATCH_SIZE=100
