@@ -118,3 +118,57 @@ esperados incluso si el sistema operativo entrega los datos en fragmentos
 más chicos que el tamaño solicitado (short write / short read). Estas 
 funciones fueron implementadas en el ejercicio 4 usando únicamente 
 `send`/`recv` (Python) y `Read`/`Write` (Go), sin bibliotecas externas.
+
+## Ejercicio 6 — Batching
+
+### Cambios al protocolo
+
+Se reemplazó el tipo de mensaje `BET` (una apuesta por mensaje) por `BATCH`,
+que transporta entre 1 y `BATCH_SIZE` apuestas codificadas, separadas por
+salto de línea (`\n`) dentro del payload —usando la coma para separar los
+campos de una apuesta individual, y el salto de línea para separar apuestas
+dentro del batch—.
+
+Se agregó un nuevo tipo de mensaje, `ACK`, con payload vacío, que el servidor
+envía al cliente inmediatamente después de persistir con éxito un batch
+completo. El cliente no envía el siguiente batch hasta recibir este `ACK`,
+logrando así que el grueso de la sincronización esté dado por el intercambio
+de mensajes y no por temporizaciones fijas.
+
+Tipos de mensaje resultantes:
+
+| Tipo | Valor | Dirección | Payload |
+|---|---|---|---|
+| `BATCH`   | 0 | cliente → servidor | N apuestas codificadas, separadas por `\n` |
+| `DONE`    | 1 | cliente → servidor | Vacío |
+| `WINNERS` | 2 | servidor → cliente | Lista de DNI ganadores separados por coma |
+| `ACK`     | 3 | servidor → cliente | Vacío (confirmación) |
+
+### Configuración
+
+El tamaño de batch es configurable mediante la variable de entorno
+`BATCH_SIZE` (definida en `docker-compose.yaml` para cada cliente). El
+cliente acumula apuestas parseadas en memoria hasta alcanzar `BATCH_SIZE`
+elementos, momento en el cual arma y envía el batch; al finalizar la lectura
+del archivo de entrada, si quedó un resto de apuestas sin completar un batch
+entero, se envía igualmente como un batch más chico.
+
+Se utilizó `BATCH_SIZE=100` para las pruebas, un valor intermedio que permite
+observar múltiples confirmaciones por agencia sin acercarse al límite de
+65535 bytes que admite el campo de longitud del header (2 bytes).
+
+### Manejo de errores
+
+Ante cualquier error de decodificación de una apuesta dentro del batch, el
+servidor no envía el `ACK` correspondiente; la conexión se corta al
+propagarse la excepción, lo cual el cliente detecta como un error de
+comunicación estándar (no se implementó un código de error explícito dentro
+de `ACK`, ni reintento automático de un batch fallido, dado que la consigna
+no lo exige).
+
+### Verificación
+
+Se validó que la cantidad de mensajes recibidos por el servidor por agencia
+coincide con la cantidad esperada de batches (`⌈apuestas / BATCH_SIZE⌉ + 1`
+por el mensaje `DONE`), y que el listado final de ganadores por agencia se
+mantiene idéntico al obtenido antes de introducir el batching.
