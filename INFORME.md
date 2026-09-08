@@ -172,3 +172,40 @@ Se validó que la cantidad de mensajes recibidos por el servidor por agencia
 coincide con la cantidad esperada de batches (`⌈apuestas / BATCH_SIZE⌉ + 1`
 por el mensaje `DONE`), y que el listado final de ganadores por agencia se
 mantiene idéntico al obtenido antes de introducir el batching.
+
+## Ejercicio 7 — Concurrencia y quorum
+
+### Concurrencia
+
+Se modificó `Server.run()` para que, tras aceptar cada conexión, delegue su
+procesamiento a un `threading.Thread` independiente (`target=self._handle_client`)
+en lugar de bloquear el loop principal hasta que esa conexión termine. Esto
+permite que el servidor acepte y procese múltiples agencias en paralelo, en
+vez de atenderlas serialmente como en los ejercicios anteriores.
+
+Se optó por `threading` en lugar de `multiprocessing` dado que el trabajo del
+servidor es mayormente I/O-bound (esperando datos de red), no CPU-bound. El
+Global Interpreter Lock (GIL) de Python impide la ejecución simultánea de
+bytecode en threads distintos, pero se libera automáticamente durante
+operaciones de I/O bloqueante (`socket.recv`/`send`, `Condition.wait()`), por
+lo que el paralelismo real logrado —solapar la espera de datos de una agencia
+con el procesamiento de otra— no se ve limitado por el GIL en este caso de uso.
+
+### Exclusión mutua sobre el storage compartido
+
+`Lottery.store_bets` y `Lottery.load_bets` acceden al mismo archivo en disco
+(`STORAGE_PATH`), compartido entre todos los threads. Ambas llamadas se
+protegen con un único `threading.Lock` (`self.lottery_lock`), garantizando
+que nunca dos threads lean o escriban el archivo simultáneamente.
+
+### Quorum de agencias
+
+Se agregó la variable de entorno `AGENCY_QUORUM_MIN`, que define la cantidad
+mínima de agencias que deben notificar su finalización (mensaje `DONE`) antes
+de que cualquiera de ellas pueda calcular y recibir su listado de ganadores.
+
+La sincronización se implementa con un `threading.Condition` (`self.condition`)
+y un contador compartido (`self.agencies_done`). Al recibir `DONE`, cada
+thread, dentro de un único bloque `with self.condition:`, incrementa el
+contador, notifica a los threads en espera si se alcanzó el quorum
+(`notify_all()`), y

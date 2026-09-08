@@ -1,4 +1,5 @@
 import socket
+import threading
 import logger
 import safe_socket
 import protocol
@@ -8,9 +9,14 @@ STORAGE_PATH = "/tmp/bets_storage.csv"
 
 
 class Server:
-    def __init__(self, server_host: str, server_port: int) -> None:
+    def __init__(self, server_host: str, server_port: int, agency_quorum_min: int) -> None:
         self.server_host = server_host
         self.server_port = server_port
+        self.agency_quorum_min = agency_quorum_min
+
+        self.lottery_lock = threading.Lock()
+        self.condition = threading.Condition()
+        self.agencies_done = 0
 
     def _handle_client(self, client_socket):
         action = "handle-client"
@@ -36,7 +42,8 @@ class Server:
                         raise ValueError(
                             f"Agency ID mismatch: expected {agency_id}, got {bets[0].agency_id}"
                         )
-                    lottery.store_bets(bets)
+                    with self.lottery_lock:
+                        lottery.store_bets(bets)
                     protocol.send_message(client_socket, protocol.ACK, b"")
                 elif msg_type == protocol.DONE:
                     break
@@ -49,7 +56,15 @@ class Server:
                     )
                     raise ValueError(f"Invalid message type: {msg_type}")
 
-            all_bets = lottery.load_bets()
+            with self.condition:
+                self.agencies_done += 1
+                if self.agencies_done >= self.agency_quorum_min:
+                    self.condition.notify_all()
+                while self.agencies_done < self.agency_quorum_min:
+                    self.condition.wait()
+
+            with self.lottery_lock:
+                all_bets = lottery.load_bets()
             only_winners = [bet for bet in all_bets if (lottery.has_won(bet) and bet.agency_id == agency_id)]
             coding_winners = protocol.encode_winners(only_winners)
             protocol.send_message(client_socket, protocol.WINNERS, coding_winners)
@@ -75,4 +90,7 @@ class Server:
                     raise e
                 logger.info(action, logger.LogResult.success)
 
-                self._handle_client(client_socket)
+                client_thread = threading.Thread(
+                    target=self._handle_client, args=(client_socket,)
+                )
+                client_thread.start()
