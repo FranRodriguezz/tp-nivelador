@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -84,6 +86,9 @@ func sendBatch(conn net.Conn, batch []protocol.Bet) error {
 func (client *Client) Run() error {
 	defer client.conn.Close()
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+
 	inFile, err := os.Open(client.config.InputFile)
 	if err != nil {
 		logger.Error("open-input-file", logger.Fail)
@@ -102,6 +107,13 @@ func (client *Client) Run() error {
 	batch := []protocol.Bet{}
 
 	for scanner.Scan() {
+		select {
+		case <-sigChan:
+			logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+			return nil
+		default:
+		}
+
 		line := scanner.Text()
 		parsedLine, err := parseBet(line, client.config.AgencyId)
 		if err != nil {
@@ -123,6 +135,13 @@ func (client *Client) Run() error {
 	if err := scanner.Err(); err != nil {
 		logger.Error("read-input-file", logger.Fail)
 		return err
+	}
+
+	select {
+	case <-sigChan:
+		logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+		return nil
+	default:
 	}
 
 	if len(batch) > 0 {

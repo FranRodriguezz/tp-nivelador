@@ -6,6 +6,7 @@ services:
     container_name: server
     ports:
       - "5678:5678"
+    stop_grace_period: 15s
     environment:
       - PYTHONUNBUFFERED=1
       - SERVER_HOST=server
