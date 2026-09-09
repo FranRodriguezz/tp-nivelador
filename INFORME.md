@@ -1,4 +1,24 @@
-# Informe
+# TP0 - Sistemas Distribuidos I (75.74) - Informe
+
+**Alumno**: Franco Ezequiel Rodríguez
+
+**Padrón**: 102815
+
+**Facultad**: FIUBA — Facultad de Ingeniería, Universidad de Buenos Aires
+
+**Materia**: Sistemas Distribuidos I
+
+**Cuatrimestre**: 2do 2026
+
+---
+
+**Nota general**: cada sección de este informe documenta las decisiones
+tomadas en el momento de resolver ese ejercicio puntual. Algunas de esas
+decisiones fueron modificadas en ejercicios posteriores (por ejemplo, el
+tipo de mensaje `BET` del ejercicio 5 fue reemplazado por `BATCH` en el
+ejercicio 6). El informe no vuelve a editar retroactivamente las secciones
+anteriores para reflejar esos cambios; el diseño final vigente es el
+descrito en la última sección donde el elemento en cuestión fue modificado.
 
 ## Ejercicio 1 — Escalado a 5 clientes
 
@@ -15,6 +35,12 @@ garantiza el orden de arranque de contenedores, no que el proceso interno ya
 esté aceptando conexiones. Se aumentaron las constantes a
 `CONNECTION_ATTEMPTS_MAX=15` y `CONNECTION_ATTEMPS_DELAY_MS=500` (~7.5s de
 margen), suficiente para el entorno de prueba.
+
+**Nota**: la carpeta `input/` incluye un sexto archivo (`input-5.csv`) además
+de los cinco usados. Se mantuvieron 5 clientes siguiendo la consigna
+literal del ejercicio 1 ("Definir en el archivo `docker-compose.yaml` cinco
+contenedores de clientes"), sin asumir que la cantidad de archivos de
+entrada disponibles define la cantidad de clientes a levantar.
 
 ## Ejercicio 2 — Exposición de puertos
 
@@ -198,6 +224,16 @@ con el procesamiento de otra— no se ve limitado por el GIL en este caso de uso
 protegen con un único `threading.Lock` (`self.lottery_lock`), garantizando
 que nunca dos threads lean o escriban el archivo simultáneamente.
 
+### Storage único vs. uno por agencia
+
+Se optó por un único archivo de storage (`STORAGE_PATH`) compartido entre
+todas las agencias, en lugar de un archivo por agencia. Un storage por
+agencia eliminaría la necesidad de sincronización sobre el recurso
+(cada agencia escribiría en su propio archivo, sin contención), pero
+también evitaría ejercitar el problema de concurrencia real que pide el
+enunciado del ejercicio 7 — el propósito del ejercicio es precisamente
+coordinar el acceso a un recurso genuinamente compartido entre threads.
+
 ### Quorum de agencias
 
 Se agregó la variable de entorno `AGENCY_QUORUM_MIN`, que define la cantidad
@@ -208,4 +244,107 @@ La sincronización se implementa con un `threading.Condition` (`self.condition`)
 y un contador compartido (`self.agencies_done`). Al recibir `DONE`, cada
 thread, dentro de un único bloque `with self.condition:`, incrementa el
 contador, notifica a los threads en espera si se alcanzó el quorum
-(`notify_all()`), y
+(`notify_all()`), y luego espera (`wait()`) hasta que el quorum se cumpla —
+esto último también cubre el caso del propio thread que aún no alcanzó el
+mínimo con su incremento. Una vez satisfecho el quorum, todas las agencias
+que lleguen después pasan sin esperar, ya que la condición de espera no
+vuelve a ser verdadera (el contador es monótonamente creciente).
+
+Se optó por incremento + notificación + espera dentro de una única sección
+crítica (en lugar de operaciones separadas) para evitar una condición de
+carrera en la que una notificación se emita antes de que algún thread haya
+llegado a esperar, perdiéndose sin efecto.
+
+### Limitación conocida
+
+No se implementó un mecanismo de timeout ante agencias que nunca lleguen a
+enviar su `DONE` (por ejemplo, ante una caída de red): en ese escenario, las
+agencias que sí completaron su envío pero no alcanzaron el quorum quedarían
+esperando indefinidamente.
+
+## Ejercicio 8 — Cierre gracioso ante SIGTERM
+
+### Servidor
+
+Se capturó `SIGTERM` con `signal.signal(signal.SIGTERM, self.on_sigterm)`. El
+manejador activa una flag compartida (`self.shutting_down`) y notifica a
+todos los threads que pudieran estar esperando el quorum
+(`self.condition.notify_all()`).
+
+Para que ningún thread quede bloqueado indefinidamente ante la señal, se
+aplicó timeout a los tres puntos de espera bloqueante del servidor:
+
+- `server_socket.accept()`: timeout de 2s, revisando `self.shutting_down` en
+  cada vuelta del loop de aceptación de conexiones.
+- `client_socket.recv()` (dentro de `protocol.recv_message`): mismo timeout,
+  cortando la conexión sin calcular ganadores si el corte fue por shutdown
+  (no por un `DONE` real del cliente).
+- `condition.wait()`: la condición de espera del quorum ahora también
+  contempla `self.shutting_down`, permitiendo que los threads salgan sin
+  haber alcanzado el mínimo de agencias si el servidor se está cerrando.
+
+En ambos casos de salida forzada (timeout esperando mensajes, o quorum
+interrumpido), el servidor no envía `WINNERS`, evitando entregar un
+resultado parcial o inconsistente a la agencia.
+
+Al recibir la señal, el proceso principal espera (`Thread.join`) a que todos
+los threads de clientes activos finalicen, con un presupuesto de tiempo
+total acotado (10s) que se reparte entre los threads restantes —evitando que
+el tiempo de cierre crezca proporcionalmente a la cantidad de conexiones
+activas—, coordinado con `stop_grace_period: 15s` en `docker-compose.yaml`.
+
+### Cliente
+
+Se capturó `SIGTERM` con `signal.Notify` sobre un canal (`os/signal`,
+`syscall.SIGTERM`), siguiendo el patrón idiomático de Go (sin
+`futures`/`asyncio`, tal como en el servidor). Se revisa el canal de forma
+no bloqueante (`select` con rama `default`) en dos puntos: antes de procesar
+cada línea del archivo de entrada, y antes de enviar el batch final/`DONE`.
+
+Adicionalmente, la espera de la respuesta `WINNERS` tras el `DONE` se
+protegió con `SetReadDeadline` (2s) en un loop, ya que es una llamada
+bloqueante sin límite de tiempo por defecto que, de no interrumpirse, dejaría
+al cliente esperando indefinidamente si el servidor nunca llega a completar
+el quorum (evidenciado por el test `SigtermHandling` de la cátedra, que
+configura un escenario donde el quorum requerido nunca puede alcanzarse).
+
+En ambos casos, el cierre por señal retorna sin error (`nil`): un cierre
+gracioso ante una señal de terminación es un comportamiento correcto, no una
+falla, por lo que no se refleja como un código de salida distinto de 0.
+
+## Fixes de última hora (validación contra `make test`)
+
+Durante la validación final con la batería de tests de la cátedra
+(`make test`) se detectaron y corrigieron los siguientes problemas, no
+evidentes en las pruebas manuales anteriores:
+
+- **Falso positivo en el test `ForcedExit`**: el nombre del método
+  `exit_gracefully` hacía que se detectara como uso de funciones de salida
+  tipo shell (`exit`/`quit`) mediante el patrón de regex que usa el test.
+  Se modificó el nombre del método a `handle_sigterm` para que el test pasara
+  correctamente.
+
+- **Formato de `WINNERS` no coincidía con lo esperado por `OutputFiles`**:
+  el diseño original enviaba solo el documento (DNI) de cada ganador. El
+  test de la cátedra compara el contenido de `OUTPUT_FILE` contra la fila
+  completa del `INPUT_FILE` original. Se modificó `encode_winners` para que
+  transmita la fila completa (`first_name,last_name,document,birthdate,number`),
+  omitiendo únicamente `agency_id` (redundante, ya conocido por la agencia).
+
+- **`send_all` trataba un short-write de 0 bytes como cierre de conexión**:
+  el test `ServerShortReadWrite` simula un socket cuyo `send()` puede
+  devolver legítimamente 0 bytes en una llamada puntual (no como señal de
+  cierre, sino como parte normal de un short-write). Se removió el chequeo
+  de `n == 0` como caso de error en `send_all`, dejando que el loop
+  simplemente reintente.
+
+- **Espera de `WINNERS` sin timeout en el cliente**: ver detalle en la
+  sección de Ejercicio 8 más arriba (descubierto mediante el test
+  `SigtermHandling`).
+
+- **Conflictos de nombre de contenedor entre corridas manuales y `make test`**:
+  los `docker-compose` de la carpeta `tests/compose_files/` reutilizan
+  nombres de contenedor (`server`, `client_0`) iguales a los del
+  `docker-compose.yaml` raíz. Correr pruebas manuales y `make test` sin un
+  `make down`/`docker rm -f` intermedio entre ambos puede generar fallos por
+  conflicto de nombres, no relacionados con la lógica de la aplicación.

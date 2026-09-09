@@ -94,24 +94,13 @@ func EncodeWinners(winners []int) []byte {
 	return []byte(result)
 }
 
-// DecodeWinners decodes a byte slice into a list of winning document numbers.
-func DecodeWinners(payload []byte) ([]int, error) {
+// DecodeWinners decodes bytes into a list of raw CSV rows (one per winner).
+func DecodeWinners(payload []byte) ([]string, error) {
 	payloadStr := string(payload)
 	if payloadStr == "" {
-		return []int{}, nil
+		return []string{}, nil
 	}
-
-	parts := strings.Split(payloadStr, ",")
-	winners := []int{}
-	for _, part := range parts {
-		intAux, err := strconv.Atoi(part)
-		if err != nil {
-			return nil, err
-		}
-		winners = append(winners, intAux)
-	}
-
-	return winners, nil
+	return strings.Split(payloadStr, "\n"), nil
 }
 
 // SendMessage sends a message with the specified type and payload over the given connection.

@@ -35,11 +35,15 @@ def decode_header(header_bytes):
     return msg_type, length
 
 def encode_winners(winners):
-    """Encodes a list of winning Bet objects into bytes containing
-    their comma-separated documents (without header)
+    """Encodes a list of winning Bet objects into bytes, one full CSV row
+    per line (first_name,last_name,document,birthdate,number), matching
+    the original input file format expected by the agency.
     """
-    winners_string = ",".join([f"{bet.document}" for bet in winners])
-    return winners_string.encode("utf-8")
+    rows = []
+    for bet in winners:
+        row = f"{bet.first_name},{bet.last_name},{bet.document},{bet.birthdate},{bet.number}"
+        rows.append(row)
+    return "\n".join(rows).encode("utf-8")
 
 def decode_winners(payload):
     """Decodes bytes of comma-separated documents into a list of ints

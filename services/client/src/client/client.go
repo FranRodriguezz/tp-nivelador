@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/7574-sistemas-distribuidos/tp-nivelador/src/logger"
@@ -84,6 +86,9 @@ func sendBatch(conn net.Conn, batch []protocol.Bet) error {
 func (client *Client) Run() error {
 	defer client.conn.Close()
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGTERM)
+
 	inFile, err := os.Open(client.config.InputFile)
 	if err != nil {
 		logger.Error("open-input-file", logger.Fail)
@@ -102,6 +107,13 @@ func (client *Client) Run() error {
 	batch := []protocol.Bet{}
 
 	for scanner.Scan() {
+		select {
+		case <-sigChan:
+			logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+			return nil
+		default:
+		}
+
 		line := scanner.Text()
 		parsedLine, err := parseBet(line, client.config.AgencyId)
 		if err != nil {
@@ -125,6 +137,13 @@ func (client *Client) Run() error {
 		return err
 	}
 
+	select {
+	case <-sigChan:
+		logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+		return nil
+	default:
+	}
+
 	if len(batch) > 0 {
 		if err := sendBatch(client.conn, batch); err != nil {
 			logger.Error("send-batch", logger.Fail)
@@ -137,11 +156,27 @@ func (client *Client) Run() error {
 		return err
 	}
 
-	_, payload, err := protocol.RecvMessage(client.conn)
-	if err != nil {
-		logger.Error("recv-winners", logger.Fail)
-		return err
+	var payload []byte
+	for {
+		client.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, recvPayload, recvErr := protocol.RecvMessage(client.conn)
+		if recvErr != nil {
+			if netErr, ok := recvErr.(net.Error); ok && netErr.Timeout() {
+				select {
+				case <-sigChan:
+					logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+					return nil
+				default:
+					continue
+				}
+			}
+			logger.Error("recv-winners", logger.Fail)
+			return recvErr
+		}
+		payload = recvPayload
+		break
 	}
+	client.conn.SetReadDeadline(time.Time{})
 
 	winners, err := protocol.DecodeWinners(payload)
 	if err != nil {
@@ -150,7 +185,7 @@ func (client *Client) Run() error {
 	}
 
 	for _, winner := range winners {
-		if _, err := outFile.WriteString(fmt.Sprintf("%d\n", winner)); err != nil {
+		if _, err := outFile.WriteString(winner + "\n"); err != nil {
 			logger.Error("write-winner", logger.Fail, "winner", winner)
 			return err
 		}

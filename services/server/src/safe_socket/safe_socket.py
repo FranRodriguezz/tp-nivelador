@@ -23,6 +23,4 @@ def send_all(sock: socket.socket, data):
     buffer_size = len(data)
     while accumulated < buffer_size:
         n = sock.send(data[accumulated:])
-        if n == 0:
-            raise ConnectionError("Socket connection closed before sending all bytes")
         accumulated += n
