@@ -156,11 +156,27 @@ func (client *Client) Run() error {
 		return err
 	}
 
-	_, payload, err := protocol.RecvMessage(client.conn)
-	if err != nil {
-		logger.Error("recv-winners", logger.Fail)
-		return err
+	var payload []byte
+	for {
+		client.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, recvPayload, recvErr := protocol.RecvMessage(client.conn)
+		if recvErr != nil {
+			if netErr, ok := recvErr.(net.Error); ok && netErr.Timeout() {
+				select {
+				case <-sigChan:
+					logger.Info("client-run", logger.Success, "shutdown-signal-received", true)
+					return nil
+				default:
+					continue
+				}
+			}
+			logger.Error("recv-winners", logger.Fail)
+			return recvErr
+		}
+		payload = recvPayload
+		break
 	}
+	client.conn.SetReadDeadline(time.Time{})
 
 	winners, err := protocol.DecodeWinners(payload)
 	if err != nil {
@@ -169,7 +185,7 @@ func (client *Client) Run() error {
 	}
 
 	for _, winner := range winners {
-		if _, err := outFile.WriteString(fmt.Sprintf("%d\n", winner)); err != nil {
+		if _, err := outFile.WriteString(winner + "\n"); err != nil {
 			logger.Error("write-winner", logger.Fail, "winner", winner)
 			return err
 		}
